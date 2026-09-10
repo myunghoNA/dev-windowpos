@@ -57,7 +57,17 @@ jobs:
         run: |
           $parUrl = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
           $files = Get-ChildItem -Path "dist/app/${{ github.event.inputs.environment }}" -Recurse -Include *.exe,*.yml,*.blockmap
+          $failed = $false
+
           foreach ($file in $files) {
+            $encodedName = [System.Uri]::EscapeDataString($file.Name)
+            $uploadUrl = "$parUrl$encodedName"
             Write-Host "Uploading $($file.Name)"
-            curl.exe -X PUT --data-binary "@$($file.FullName)" "$($parUrl)$($file.Name)"
+            curl.exe -f -X PUT --data-binary "@$($file.FullName)" "$uploadUrl"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to upload $($file.Name)"
+              $failed = $true
+            }
           }
+
+          if ($failed) { exit 1 }
