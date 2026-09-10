@@ -56,7 +56,7 @@ jobs:
         shell: pwsh
         run: |
           $parUrl = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
-          $files = Get-ChildItem -Path "dist/app/${{ github.event.inputs.environment }}" -Recurse -Include *.exe,*.yml,*.blockmap
+          $files = Get-ChildItem -Path "dist/app/${{ github.event.inputs.environment }}" -File -Include *.exe,*.yml,*.blockmap
           $failed = $false
 
           foreach ($file in $files) {
