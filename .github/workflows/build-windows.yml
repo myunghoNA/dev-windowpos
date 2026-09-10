@@ -56,18 +56,29 @@ jobs:
         shell: pwsh
         run: |
           $parUrl = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
-          $readParUrl = "여기에_해당_환경의_읽기전용_PAR_URL"  # electron-builder-stag.js의 publish.url과 동일
+          $readParUrl = "여기에_실제_읽기전용_PAR_URL_붙여넣기"
           $dir = "dist/app/stag"
+
+          if ($readParUrl -notmatch '^https://') {
+            Write-Error "readParUrl이 실제 URL로 설정되지 않았습니다: $readParUrl"
+            exit 1
+          }
 
           function Get-Base64Sha512($path) {
               $bytes = [System.Security.Cryptography.SHA512]::Create().ComputeHash([System.IO.File]::ReadAllBytes($path))
               return [Convert]::ToBase64String($bytes)
           }
 
-          $allFiles = Get-ChildItem -Path "$dir\*" -File -Include *.exe,*.yml,*.blockmap
-          $payloadFiles = $allFiles | Where-Object { $_.Name -ne 'latest.yml' }
-          $latestYml = $allFiles | Where-Object { $_.Name -eq 'latest.yml' }
+          $payloadFiles = Get-ChildItem -Path "$dir\*" -File | Where-Object {
+              ($_.Extension -eq '.exe' -and $_.Name -ne 'elevate.exe') -or $_.Extension -eq '.blockmap'
+          }
+          $latestYml = Get-ChildItem -Path "$dir\*" -File -Filter 'latest.yml'
           $failed = $false
+
+          if (-not $payloadFiles -or -not $latestYml) {
+            Write-Error "업로드할 대상 파일을 찾지 못했습니다 (payload: $($payloadFiles.Count)개, latest.yml: $($latestYml.Count)개)"
+            exit 1
+          }
 
           # 1단계: 인스톨러 + blockmap 먼저 업로드하고 즉시 재검증
           foreach ($file in $payloadFiles) {
@@ -79,6 +90,11 @@ jobs:
             $localHash = Get-Base64Sha512 $file.FullName
             $tmpFile = Join-Path $env:TEMP "verify-$($file.Name)"
             curl.exe -f -o $tmpFile "$readParUrl$encodedName"
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpFile)) {
+              Write-Error "$($file.Name) 재다운로드 실패"
+              $failed = $true
+              continue
+            }
             $remoteHash = Get-Base64Sha512 $tmpFile
             if ($remoteHash -ne $localHash) {
               Write-Error "$($file.Name) 해시 불일치 - 업로드 손상 의심"
@@ -93,7 +109,7 @@ jobs:
             exit 1
           }
 
-          # 2단계: 전부 통과했을 때만 latest.yml 업로드 → 이 순간부터 사용자에게 새 버전 노출
+          # 2단계: 전부 통과했을 때만 latest.yml 업로드
           $encodedYml = [System.Uri]::EscapeDataString($latestYml.Name)
           curl.exe -f -X PUT --data-binary "@$($latestYml.FullName)" "$parUrl$encodedYml"
           if ($LASTEXITCODE -ne 0) { Write-Error "latest.yml 업로드 실패"; exit 1 }
