@@ -12,6 +12,11 @@ on:
           - dev
           - stag
           - prod
+      deploy:
+        description: "OCI 버킷에 업로드할까요?"
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   build-windows:
@@ -36,7 +41,7 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      - name: Upload build artifact
+      - name: Upload build artifact to GitHub
         uses: actions/upload-artifact@v4
         with:
           name: windows-pos-${{ github.event.inputs.environment }}-${{ github.run_number }}
@@ -45,3 +50,14 @@ jobs:
             dist/app/${{ github.event.inputs.environment }}/**/*.yml
             dist/app/${{ github.event.inputs.environment }}/**/*.blockmap
           retention-days: 14
+
+      - name: Upload to OCI Object Storage
+        if: ${{ github.event.inputs.deploy == 'true' }}
+        shell: pwsh
+        run: |
+          $parUrl = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
+          $files = Get-ChildItem -Path "dist/app/${{ github.event.inputs.environment }}" -Recurse -Include *.exe,*.yml,*.blockmap
+          foreach ($file in $files) {
+            Write-Host "Uploading $($file.Name)"
+            curl.exe -X PUT --data-binary "@$($file.FullName)" "$($parUrl)$($file.Name)"
+          }
