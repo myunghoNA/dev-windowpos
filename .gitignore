@@ -1,0 +1,27 @@
+# Dependencies
+/node_modules
+
+# Build artifacts
+/dist
+
+# coverage 
+/coverage
+
+# Generated Types (필수!)
+types/env.d.ts
+
+# Environment variables (보안 주의!)
+.env
+.env.*.local
+.env.local
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs & Cache
+*.log
+npm-debug.log*
+.eslintcache

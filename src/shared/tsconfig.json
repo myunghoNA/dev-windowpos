@@ -1,0 +1,23 @@
+{
+    "extends": "../../config/tsconfig-base.json",
+    "compilerOptions": {
+      // "baseUrl": "./",
+      "allowJs": false,
+      "checkJs": false,
+      "paths": {
+        "@/*": ["./src/*"],
+        "@main/*": ["../main/*"],
+        "@preload/*": ["../preload/*"],
+        "@renderer/*": ["../renderer/*"],
+        "@shared/*": ["../shared/*"],
+      },
+      "types": ["node", "vite/client"]
+    },
+    "include": [
+     "**/*",
+     "src/**/*",
+     "../../types/*.d.ts"
+    ],
+    "exclude": ["node_modules", "dist", "build"]
+  }
+  

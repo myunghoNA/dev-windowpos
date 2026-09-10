@@ -1,0 +1,24 @@
+@use 'abstracts' as *;
+
+html, body{
+    @include font;
+}
+
+#app{
+    height: 100dvh;
+}
+
+body.ltr {
+  text-align: left;
+}
+
+/* RTL (아랍어) */
+body.rtl {
+  text-align: right;
+  font-family: 'Tahoma', 'Arial', sans-serif; /* 아랍어에 적합한 폰트 권장 */
+  
+  /* 아이콘이나 특정 버튼 방향 반전이 필요할 때 */
+  .back-button {
+    transform: rotate(180deg);
+  }
+}
