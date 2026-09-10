@@ -1,7 +1,7 @@
 {
   "name": "flownet-window-pos",
   "description": "Flownet Window POS",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "private": true,
   "main": "main/index.cjs.js",
   "dependencies": {
