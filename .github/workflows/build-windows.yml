@@ -56,7 +56,7 @@ jobs:
         shell: pwsh
         run: |
           $parUrl = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
-          $files = Get-ChildItem -Path "dist/app/${{ github.event.inputs.environment }}" -File -Include *.exe,*.yml,*.blockmap
+          $files = Get-ChildItem -Path "dist/app/stag\*" -File -Include *.exe,*.yml,*.blockmap
           $failed = $false
 
           foreach ($file in $files) {
@@ -70,4 +70,8 @@ jobs:
             }
           }
 
+          if ($files.Count -eq 0) {
+            Write-Error "업로드할 파일을 찾지 못했습니다 - 경로를 확인하세요"
+            exit 1
+          }
           if ($failed) { exit 1 }
