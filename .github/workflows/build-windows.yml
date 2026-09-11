@@ -51,67 +51,58 @@ jobs:
             dist/app/${{ github.event.inputs.environment }}/**/*.blockmap
           retention-days: 14
 
-      - name: Upload to OCI Object Storage (verify before going live)
+      - name: Upload to OCI Object Storage
         if: ${{ github.event.inputs.deploy == 'true' }}
         shell: pwsh
         run: |
-          $parUrl = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
-          $readParUrl = "여기에_실제_읽기전용_PAR_URL_붙여넣기"
-          $dir = "dist/app/stag"
+          $ErrorActionPreference = "Stop"
 
-          if ($readParUrl -notmatch '^https://') {
-            Write-Error "readParUrl이 실제 URL로 설정되지 않았습니다: $readParUrl"
+          $parUrl   = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
+          $buildDir = "dist/app/${{ github.event.inputs.environment }}"
+
+          $mainFiles = Get-ChildItem -Path "$buildDir\*" -File -Include *.exe, *.blockmap
+          $ymlFiles  = Get-ChildItem -Path "$buildDir\*" -File -Include *.yml
+
+          if ($mainFiles.Count -eq 0) {
+            Write-Error "업로드할 exe/blockmap 파일을 찾지 못했습니다 - 경로를 확인하세요"
             exit 1
           }
 
-          function Get-Base64Sha512($path) {
-              $bytes = [System.Security.Cryptography.SHA512]::Create().ComputeHash([System.IO.File]::ReadAllBytes($path))
-              return [Convert]::ToBase64String($bytes)
-          }
-
-          $payloadFiles = Get-ChildItem -Path "$dir\*" -File | Where-Object {
-              ($_.Extension -eq '.exe' -and $_.Name -ne 'elevate.exe') -or $_.Extension -eq '.blockmap'
-          }
-          $latestYml = Get-ChildItem -Path "$dir\*" -File -Filter 'latest.yml'
-          $failed = $false
-
-          if (-not $payloadFiles -or -not $latestYml) {
-            Write-Error "업로드할 대상 파일을 찾지 못했습니다 (payload: $($payloadFiles.Count)개, latest.yml: $($latestYml.Count)개)"
-            exit 1
-          }
-
-          # 1단계: 인스톨러 + blockmap 먼저 업로드하고 즉시 재검증
-          foreach ($file in $payloadFiles) {
+          function Upload-File($file, $parUrl) {
             $encodedName = [System.Uri]::EscapeDataString($file.Name)
+            $uploadUrl = "$parUrl$encodedName"
             Write-Host "Uploading $($file.Name)"
-            curl.exe -f -X PUT --data-binary "@$($file.FullName)" "$parUrl$encodedName"
-            if ($LASTEXITCODE -ne 0) { $failed = $true; continue }
-
-            $localHash = Get-Base64Sha512 $file.FullName
-            $tmpFile = Join-Path $env:TEMP "verify-$($file.Name)"
-            curl.exe -f -o $tmpFile "$readParUrl$encodedName"
-            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpFile)) {
-              Write-Error "$($file.Name) 재다운로드 실패"
-              $failed = $true
-              continue
+            curl.exe -f -X PUT --data-binary "@$($file.FullName)" "$uploadUrl"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload $($file.Name)"
             }
-            $remoteHash = Get-Base64Sha512 $tmpFile
-            if ($remoteHash -ne $localHash) {
-              Write-Error "$($file.Name) 해시 불일치 - 업로드 손상 의심"
-              $failed = $true
-            } else {
-              Write-Host "$($file.Name) 검증 완료"
-            }
+            return $uploadUrl
           }
 
-          if ($failed) {
-            Write-Error "검증 실패 - latest.yml은 올리지 않습니다 (기존 버전이 계속 live로 유지됩니다)"
-            exit 1
+          # exe/blockmap 업로드 후 즉시 재다운로드하여 SHA512 비교 (하나라도 실패하면 여기서 즉시 중단)
+          foreach ($file in $mainFiles) {
+            $localHash = (Get-FileHash -Path $file.FullName -Algorithm SHA512).Hash
+            $uploadUrl = Upload-File -file $file -parUrl $parUrl
+
+            $verifyPath = Join-Path $env:RUNNER_TEMP $file.Name
+            curl.exe -f -o $verifyPath "$uploadUrl"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "검증용 재다운로드 실패: $($file.Name)"
+              exit 1
+            }
+
+            $remoteHash = (Get-FileHash -Path $verifyPath -Algorithm SHA512).Hash
+            Remove-Item $verifyPath -Force
+
+            if ($localHash -ne $remoteHash) {
+              Write-Error "해시 불일치! $($file.Name) : local=$localHash remote=$remoteHash"
+              exit 1
+            }
+
+            Write-Host "검증 완료: $($file.Name) ($localHash)"
           }
 
-          # 2단계: 전부 통과했을 때만 latest.yml 업로드
-          $encodedYml = [System.Uri]::EscapeDataString($latestYml.Name)
-          curl.exe -f -X PUT --data-binary "@$($latestYml.FullName)" "$parUrl$encodedYml"
-          if ($LASTEXITCODE -ne 0) { Write-Error "latest.yml 업로드 실패"; exit 1 }
-
-          Write-Host "배포 완료 - latest.yml 갱신됨, 새 버전이 사용자에게 노출됩니다"
+          # exe/blockmap 검증이 전부 통과한 경우에만 latest.yml 업로드
+          foreach ($file in $ymlFiles) {
+            Upload-File -file $file -parUrl $parUrl | Out-Null
+          }
