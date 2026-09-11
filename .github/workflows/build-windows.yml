@@ -1,4 +1,4 @@
-name: Build Windows POS App
+name: Build Flownet POS Windows App
 
 on:
   workflow_dispatch:
@@ -57,35 +57,46 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $parUrl   = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
-          $buildDir = "dist/app/${{ github.event.inputs.environment }}"
+          $parUrl      = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
+          $environment = "${{ github.event.inputs.environment }}"
+          $buildDir    = "dist/app/$environment"
+
+          if (-not (Test-Path $buildDir)) {
+            Write-Error "빌드 디렉터리를 찾을 수 없습니다: $buildDir"
+            exit 1
+          }
+
+          # 오브젝트 키에 "/"가 들어가도 경로 구분자로 남도록, 세그먼트별로만 인코딩
+          function Build-Url($key, $parUrl) {
+            $encoded = ($key -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '/'
+            return "$parUrl$encoded"
+          }
+
+          function Upload-File($file, $parUrl) {
+            $uploadUrl = Build-Url -key $file.Name -parUrl $parUrl
+            Write-Host "Uploading $($file.Name) ..."
+            curl.exe -f -sS -X PUT --data-binary "@$($file.FullName)" "$uploadUrl"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Upload failed: $($file.Name)"
+            }
+            return $uploadUrl
+          }
 
           $mainFiles = Get-ChildItem -Path "$buildDir\*" -File -Include *.exe, *.blockmap
           $ymlFiles  = Get-ChildItem -Path "$buildDir\*" -File -Include *.yml
 
           if ($mainFiles.Count -eq 0) {
-            Write-Error "업로드할 exe/blockmap 파일을 찾지 못했습니다 - 경로를 확인하세요"
+            Write-Error "업로드할 exe/blockmap 파일을 찾지 못했습니다 - 경로를 확인하세요: $buildDir"
             exit 1
           }
 
-          function Upload-File($file, $parUrl) {
-            $encodedName = [System.Uri]::EscapeDataString($file.Name)
-            $uploadUrl = "$parUrl$encodedName"
-            Write-Host "Uploading $($file.Name)"
-            curl.exe -f -X PUT --data-binary "@$($file.FullName)" "$uploadUrl"
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to upload $($file.Name)"
-            }
-            return $uploadUrl
-          }
-
-          # exe/blockmap 업로드 후 즉시 재다운로드하여 SHA512 비교 (하나라도 실패하면 여기서 즉시 중단)
+          # 1단계: exe/blockmap 업로드 후 즉시 재다운로드하여 SHA512 비교
           foreach ($file in $mainFiles) {
             $localHash = (Get-FileHash -Path $file.FullName -Algorithm SHA512).Hash
             $uploadUrl = Upload-File -file $file -parUrl $parUrl
 
             $verifyPath = Join-Path $env:RUNNER_TEMP $file.Name
-            curl.exe -f -o $verifyPath "$uploadUrl"
+            curl.exe -f -sS -o $verifyPath "$uploadUrl"
             if ($LASTEXITCODE -ne 0) {
               Write-Error "검증용 재다운로드 실패: $($file.Name)"
               exit 1
@@ -102,7 +113,40 @@ jobs:
             Write-Host "검증 완료: $($file.Name) ($localHash)"
           }
 
-          # exe/blockmap 검증이 전부 통과한 경우에만 latest.yml 업로드
+          # 2단계: latest.yml을 덮어쓰기 전에 현재 라이브 버전을 history/ 로 백업
+          $liveYmlUrl     = Build-Url -key "latest.yml" -parUrl $parUrl
+          $currentYmlPath = Join-Path $env:RUNNER_TEMP "current-latest.yml"
+
+          curl.exe -f -s -o $currentYmlPath "$liveYmlUrl"
+          if ($LASTEXITCODE -eq 0 -and (Test-Path $currentYmlPath) -and (Get-Item $currentYmlPath).Length -gt 0) {
+            $versionMatch = Select-String -Path $currentYmlPath -Pattern '^version:\s*(\S+)'
+            if ($versionMatch) {
+              $oldVersion = $versionMatch.Matches[0].Groups[1].Value
+              $backupKey  = "history/$environment/latest-$oldVersion.yml"
+              $backupUrl  = Build-Url -key $backupKey -parUrl $parUrl
+
+              Write-Host "기존 latest.yml (버전 $oldVersion) 백업 중 -> $backupKey"
+              curl.exe -f -sS -X PUT --data-binary "@$currentYmlPath" "$backupUrl"
+              if ($LASTEXITCODE -ne 0) {
+                Write-Error "백업 업로드 실패 - 배포를 중단합니다 (롤백 안전망 없이는 진행하지 않음)"
+                exit 1
+              }
+              Write-Host "백업 완료: $backupKey"
+            } else {
+              Write-Warning "기존 latest.yml에서 version 값을 파싱하지 못해 백업을 건너뜁니다"
+            }
+          } else {
+            Write-Host "기존 latest.yml이 없습니다 (최초 배포로 판단, 백업 건너뜀)"
+          }
+          Remove-Item $currentYmlPath -Force -ErrorAction SilentlyContinue
+
+          # 3단계: exe/blockmap 검증 + 백업이 전부 끝난 뒤에만 새 latest.yml 업로드
+          if ($ymlFiles.Count -eq 0) {
+            Write-Warning "yml 파일을 찾지 못했습니다 (electron-builder 설정을 확인하세요)"
+          }
+
           foreach ($file in $ymlFiles) {
             Upload-File -file $file -parUrl $parUrl | Out-Null
           }
+
+          Write-Host "모든 파일 업로드 및 검증 완료."
