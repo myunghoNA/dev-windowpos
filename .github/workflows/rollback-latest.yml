@@ -1,0 +1,77 @@
+name: Rollback Flownet POS Windows latest.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "롤백할 환경"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - stag
+          - prod
+      version:
+        description: "복원할 버전 (예: 0.9.9) - 해당 버전 배포 시 history/에 백업된 것이어야 합니다"
+        required: true
+        type: string
+
+jobs:
+  rollback:
+    runs-on: windows-latest
+
+    steps:
+      - name: Restore latest.yml from backup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $parUrl      = "${{ secrets.OCI_UPLOAD_PAR_URL }}"
+          $environment = "${{ github.event.inputs.environment }}"
+          $version     = "${{ github.event.inputs.version }}"
+
+          function Build-Url($key, $parUrl) {
+            $encoded = ($key -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '/'
+            return "$parUrl$encoded"
+          }
+
+          $backupKey = "history/$environment/latest-$version.yml"
+          $backupUrl = Build-Url -key $backupKey -parUrl $parUrl
+          $restorePath = Join-Path $env:RUNNER_TEMP "restored-latest.yml"
+
+          Write-Host "백업 조회 중: $backupKey"
+          curl.exe -f -sS -o $restorePath "$backupUrl"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "백업을 찾을 수 없습니다: $backupKey (버전 표기, 환경 선택이 맞는지 확인하세요)"
+            exit 1
+          }
+
+          $restoreHash = (Get-FileHash -Path $restorePath -Algorithm SHA512).Hash
+          Write-Host "백업 파일 확인 완료 (SHA512: $restoreHash)"
+
+          $liveUrl = Build-Url -key "latest.yml" -parUrl $parUrl
+
+          Write-Host "latest.yml 을 $version 버전으로 되돌리는 중..."
+          curl.exe -f -sS -X PUT --data-binary "@$restorePath" "$liveUrl"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "latest.yml 복원 업로드 실패"
+            exit 1
+          }
+
+          # 복원 후 재다운로드하여 무결성 검증 (여기서도 해시 비교 원칙은 동일하게 적용)
+          $verifyPath = Join-Path $env:RUNNER_TEMP "verify-latest.yml"
+          curl.exe -f -sS -o $verifyPath "$liveUrl"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "복원 검증용 재다운로드 실패"
+            exit 1
+          }
+
+          $verifyHash = (Get-FileHash -Path $verifyPath -Algorithm SHA512).Hash
+          if ($verifyHash -ne $restoreHash) {
+            Write-Error "복원 후 해시 불일치! 백업=$restoreHash 복원본=$verifyHash"
+            exit 1
+          }
+
+          Write-Host "롤백 완료: '$environment' 환경의 latest.yml 을 버전 $version 으로 되돌렸습니다."
+          Write-Host "주의: 이 버전의 exe/blockmap 파일이 버킷에서 삭제되지 않았어야 클라이언트가 정상적으로 업데이트를 받습니다."
